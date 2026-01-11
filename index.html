@@ -1,0 +1,932 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BLC40 | Professional Trading Engine</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & ReactDOM -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+    
+    <!-- Babel -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    
+    <!-- Crypto-JS for Binance API Signing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+
+    <style>
+        :root { --bg: #0b0e11; --card: #1e2329; --yellow: #FCD535; --green: #0ecb81; --red: #f6465d; }
+        body { background-color: var(--bg); color: #eaecef; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        
+        /* Custom UI Elements */
+        .card { background-color: var(--card); border: 1px solid #2b3139; border-radius: 8px; }
+        .input-dark { background-color: #2b3139; border: 1px solid #474d57; color: white; width: 100%; padding: 12px; border-radius: 4px; outline: none; transition: 0.2s; }
+        .input-dark:focus { border-color: var(--yellow); }
+        
+        .btn { padding: 12px 20px; border-radius: 4px; font-weight: 600; cursor: pointer; transition: 0.2s; width: 100%; display: flex; align-items: center; justify-content: center; border: none; }
+        .btn-primary { background-color: var(--yellow); color: #1e2329; }
+        .btn-primary:hover { filter: brightness(1.1); }
+        .btn-outline { border: 1px solid #474d57; color: #848e9c; background: transparent; }
+        .btn-outline:hover { border-color: var(--yellow); color: var(--yellow); }
+
+        .tab-btn { padding: 10px; flex: 1; text-align: center; border-bottom: 2px solid transparent; color: #848e9c; cursor: pointer; }
+        .tab-btn.active { border-color: var(--yellow); color: var(--yellow); font-weight: bold; }
+        
+        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; z-index: 100; }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .toggle-checkbox:checked { right: 0; border-color: #0ecb81; }
+        .toggle-checkbox:checked + .toggle-label { background-color: #0ecb81; }
+    </style>
+</head>
+<body>
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, memo, useCallback, useMemo } = React;
+
+        // --- CONSTANTS ---
+        const DEVELOPER = "Application Developed by SANJOY SAHA";
+
+        const INITIAL_COINS = [
+            { symbol: 'BTC', name: 'Bitcoin', price: 96540.50 },
+            { symbol: 'ETH', name: 'Ethereum', price: 3780.25 },
+            { symbol: 'SOL', name: 'Solana', price: 185.40 },
+            { symbol: 'BNB', name: 'Binance Coin', price: 610.15 },
+            { symbol: 'XRP', name: 'Ripple', price: 1.15 }
+        ];
+
+        const DEMO_USER = {
+            id: 'demo_user',
+            name: 'Demo Trader',
+            email: 'demo@blc40.com',
+            password: '123456',
+            role: 'user',
+            balance: 500, // Balance $500
+            joined: Date.now(),
+            api: null
+        };
+
+        // --- BINANCE API HELPER ---
+        const executeBinanceOrder = async (apiKey, apiSecret, symbol, side, quantity) => {
+            const endpoint = 'https://api.binance.com/api/v3/order';
+            const timestamp = Date.now();
+            const cleanSymbol = symbol + 'USDT'; 
+            
+            const queryString = `symbol=${cleanSymbol}&side=${side}&type=MARKET&quantity=${quantity.toFixed(5)}&timestamp=${timestamp}`;
+            const signature = CryptoJS.HmacSHA256(queryString, apiSecret).toString();
+            const url = `${endpoint}?${queryString}&signature=${signature}`;
+
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' }
+                });
+                if (!response.ok) throw new Error(`Binance API Error: ${response.status}`);
+                return await response.json();
+            } catch (error) {
+                console.warn("Binance API Direct Call Failed (Expected in Browser):", error);
+                throw error;
+            }
+        };
+
+        // --- COMPONENTS ---
+
+        const PriceChart = memo(({ data, color = "#FCD535", symbol }) => {
+            if (!data || data.length < 2) return <div className="h-48 flex items-center justify-center text-gray-500 text-xs">Waiting for live data...</div>;
+
+            const max = Math.max(...data);
+            const min = Math.min(...data);
+            const range = max - min || 1;
+            
+            const points = data.map((d, i) => {
+                const x = (i / (data.length - 1)) * 100;
+                const y = 100 - ((d - min) / range) * 80 - 10;
+                return `${x},${y}`;
+            }).join(" ");
+
+            return (
+                <div className="w-full h-48 bg-[#161a1e] rounded p-2 relative overflow-hidden">
+                    <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">
+                        <defs>
+                            <linearGradient id={`grad-${symbol}`} x1="0" x2="0" y1="0" y2="1">
+                                <stop offset="0%" stopColor={color} stopOpacity="0.3" />
+                                <stop offset="100%" stopColor={color} stopOpacity="0" />
+                            </linearGradient>
+                        </defs>
+                        <polyline fill="none" stroke={color} strokeWidth="1.5" points={points} vectorEffect="non-scaling-stroke" />
+                        <polygon fill={`url(#grad-${symbol})`} points={`0,100 ${points} 100,100`} />
+                    </svg>
+                    <div className="absolute top-2 right-2 text-xs font-mono text-white bg-black/50 px-2 rounded border border-gray-700">
+                        ${data[data.length-1].toFixed(2)}
+                    </div>
+                </div>
+            );
+        });
+
+        // --- HISTORY PANEL COMPONENT (Reused for User & Admin) ---
+        const HistoryPanel = ({ trades, role, onClose }) => {
+            const [filter, setFilter] = useState('today'); // today, week, month, custom
+            const [customStart, setCustomStart] = useState('');
+            const [customEnd, setCustomEnd] = useState('');
+
+            const filteredTrades = useMemo(() => {
+                const now = new Date();
+                const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+                const startOfWeek = startOfDay - (now.getDay() * 24 * 60 * 60 * 1000);
+                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+
+                return trades.filter(t => {
+                    const tTime = t.timestamp; // Ensure trades have timestamp number
+                    if (filter === 'today') return tTime >= startOfDay;
+                    if (filter === 'week') return tTime >= startOfWeek;
+                    if (filter === 'month') return tTime >= startOfMonth;
+                    if (filter === 'custom') {
+                        const s = customStart ? new Date(customStart).getTime() : 0;
+                        const e = customEnd ? new Date(customEnd).getTime() + (24*60*60*1000) : Date.now();
+                        return tTime >= s && tTime <= e;
+                    }
+                    return true;
+                });
+            }, [trades, filter, customStart, customEnd]);
+
+            const stats = useMemo(() => {
+                let totalPnL = 0;
+                let totalComm = 0;
+                filteredTrades.forEach(t => {
+                    totalPnL += t.netPnL;
+                    totalComm += t.fee;
+                });
+                return { totalPnL, totalComm, count: filteredTrades.length };
+            }, [filteredTrades]);
+
+            return (
+                <div className="modal-overlay">
+                    <div className="card w-full max-w-4xl p-6 fade-in shadow-2xl m-4 max-h-[90vh] overflow-y-auto flex flex-col">
+                        <div className="flex justify-between items-center mb-6 border-b border-gray-700 pb-4">
+                            <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                                <span className="text-[#FCD535]">{role === 'admin' ? 'Revenue' : 'Profit & Loss'}</span> History
+                            </h2>
+                            <button onClick={onClose} className="text-gray-500 hover:text-white text-2xl">×</button>
+                        </div>
+
+                        {/* Filters */}
+                        <div className="flex flex-wrap gap-2 mb-6">
+                            {['today', 'week', 'month', 'custom'].map(f => (
+                                <button 
+                                    key={f} 
+                                    onClick={() => setFilter(f)} 
+                                    className={`px-4 py-2 text-xs rounded font-bold uppercase ${filter === f ? 'bg-[#FCD535] text-black' : 'bg-gray-800 text-gray-400'}`}
+                                >
+                                    {f}
+                                </button>
+                            ))}
+                        </div>
+
+                        {filter === 'custom' && (
+                            <div className="flex gap-4 mb-6">
+                                <input type="date" className="input-dark text-xs" onChange={e => setCustomStart(e.target.value)} />
+                                <span className="text-gray-500 self-center">to</span>
+                                <input type="date" className="input-dark text-xs" onChange={e => setCustomEnd(e.target.value)} />
+                            </div>
+                        )}
+
+                        {/* Summary Cards */}
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                            <div className="bg-[#151a1e] p-4 rounded border border-gray-700">
+                                <div className="text-xs text-gray-500 uppercase">Selected Period</div>
+                                <div className="text-white font-bold capitalize">{filter}</div>
+                            </div>
+                            <div className="bg-[#151a1e] p-4 rounded border border-gray-700">
+                                <div className="text-xs text-gray-500 uppercase">Total Trades</div>
+                                <div className="text-white font-bold">{stats.count}</div>
+                            </div>
+                            <div className="bg-[#151a1e] p-4 rounded border border-gray-700 col-span-2">
+                                <div className="text-xs text-gray-500 uppercase">
+                                    {role === 'admin' ? 'Total Commission Earned' : 'Net PnL (After Fees)'}
+                                </div>
+                                <div className={`text-2xl font-mono font-bold ${role === 'admin' ? 'text-[#FCD535]' : (stats.totalPnL >= 0 ? 'text-[#0ecb81]' : 'text-[#f6465d]')}`}>
+                                    {role === 'admin' ? `$${stats.totalComm.toFixed(2)}` : `${stats.totalPnL >= 0 ? '+' : ''}$${stats.totalPnL.toFixed(2)}`}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Table */}
+                        <div className="flex-1 overflow-auto rounded border border-gray-700">
+                            <table className="w-full text-left text-sm text-gray-400">
+                                <thead className="bg-[#151a1e] text-xs uppercase sticky top-0">
+                                    <tr>
+                                        <th className="p-3">Date/Time</th>
+                                        <th className="p-3">Pair</th>
+                                        <th className="p-3">Type</th>
+                                        <th className="p-3 text-right">Gross PnL</th>
+                                        <th className="p-3 text-right text-yellow-500">Fee</th>
+                                        <th className="p-3 text-right">Net PnL</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-800 bg-[#1e2329]">
+                                    {filteredTrades.map((t, i) => (
+                                        <tr key={i} className="hover:bg-gray-800">
+                                            <td className="p-3 text-xs">{t.formattedTime}</td>
+                                            <td className="p-3 font-bold text-white">{t.symbol}</td>
+                                            <td className={`p-3 text-xs font-bold ${t.type === 'BUY' ? 'text-green-500' : 'text-red-500'}`}>{t.type}</td>
+                                            <td className={`p-3 text-right ${t.grossPnL>=0?'text-green-500':'text-red-500'}`}>{t.grossPnL.toFixed(2)}</td>
+                                            <td className="p-3 text-right text-yellow-500">-{t.fee.toFixed(2)}</td>
+                                            <td className={`p-3 text-right font-bold ${t.netPnL>=0?'text-green-500':'text-red-500'}`}>{t.netPnL.toFixed(2)}</td>
+                                        </tr>
+                                    ))}
+                                    {filteredTrades.length === 0 && (
+                                        <tr><td colSpan="6" className="p-8 text-center">No records found for this period.</td></tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- USER PROFILE MODAL ---
+        const UserProfileModal = ({ user, onClose, trades }) => {
+            const [viewHistory, setViewHistory] = useState(false);
+
+            if (viewHistory) return <HistoryPanel trades={trades} role="user" onClose={() => setViewHistory(false)} />;
+
+            return (
+                <div className="modal-overlay">
+                    <div className="card w-96 p-6 fade-in shadow-2xl">
+                        <div className="flex justify-between items-center mb-6 border-b border-gray-700 pb-4">
+                            <h2 className="text-xl font-bold text-white">My Profile</h2>
+                            <button onClick={onClose} className="text-gray-500 hover:text-white">✕</button>
+                        </div>
+                        <div className="flex flex-col items-center mb-6">
+                            <div className="w-20 h-20 bg-gray-800 rounded-full flex items-center justify-center text-3xl mb-3 border-2 border-[#FCD535]">
+                                👤
+                            </div>
+                            <h3 className="text-lg font-bold text-white">{user.name}</h3>
+                            <p className="text-sm text-gray-500">{user.email}</p>
+                        </div>
+                        
+                        <div className="space-y-4">
+                            <div className="bg-[#151a1e] p-3 rounded flex justify-between">
+                                <span className="text-gray-400 text-sm">Account Status</span>
+                                <span className="text-[#0ecb81] text-sm font-bold">Active</span>
+                            </div>
+                            <div className="bg-[#151a1e] p-3 rounded flex justify-between">
+                                <span className="text-gray-400 text-sm">Member Since</span>
+                                <span className="text-white text-sm">{new Date(user.joined || Date.now()).toLocaleDateString()}</span>
+                            </div>
+                            
+                            <button onClick={() => setViewHistory(true)} className="btn btn-outline w-full mt-4 border-gray-600 hover:border-[#FCD535] text-white">
+                                View PnL History Report
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- WALLET MODAL ---
+        const WalletModal = ({ onClose, onDeposit }) => {
+            const [amount, setAmount] = useState('');
+            const [method, setMethod] = useState('UPI');
+
+            return (
+                <div className="modal-overlay">
+                    <div className="card w-96 p-6 fade-in shadow-2xl">
+                        <div className="flex justify-between items-center mb-6">
+                            <h2 className="text-xl font-bold text-white">Add Funds</h2>
+                            <button onClick={onClose} className="text-gray-500 hover:text-white">✕</button>
+                        </div>
+                        
+                        <div className="flex gap-2 mb-4 bg-[#151a1e] p-1 rounded">
+                            <button onClick={() => setMethod('UPI')} className={`flex-1 py-2 text-sm rounded ${method === 'UPI' ? 'bg-[#FCD535] text-black font-bold' : 'text-gray-400'}`}>UPI</button>
+                            <button onClick={() => setMethod('CRYPTO')} className={`flex-1 py-2 text-sm rounded ${method === 'CRYPTO' ? 'bg-[#FCD535] text-black font-bold' : 'text-gray-400'}`}>Crypto</button>
+                        </div>
+
+                        {method === 'UPI' ? (
+                            <div className="bg-[#151a1e] p-4 rounded mb-4 text-center border border-gray-700">
+                                <p className="text-xs text-gray-400 mb-1">UPI ID (Auto-Verify)</p>
+                                <p className="text-white font-mono font-bold select-all text-lg">blc40.pay@oksbi</p>
+                            </div>
+                        ) : (
+                            <div className="bg-[#151a1e] p-4 rounded mb-4 text-center border border-gray-700">
+                                <p className="text-xs text-gray-400 mb-1">USDT (TRC20)</p>
+                                <p className="text-[10px] text-white font-mono break-all select-all">TX8...jLk9...xY7</p>
+                            </div>
+                        )}
+
+                        <input 
+                            type="number" 
+                            placeholder="Enter Amount (USD)" 
+                            className="input-dark mb-4 text-center font-bold text-lg" 
+                            value={amount}
+                            onChange={(e) => setAmount(e.target.value)}
+                        />
+
+                        <button 
+                            onClick={() => { if(amount > 0) onDeposit(parseFloat(amount)); }} 
+                            className="btn btn-primary"
+                        >
+                            Confirm Deposit
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- MAIN APP ---
+        const App = () => {
+            const [view, setView] = useState('auth'); 
+            const [users, setUsers] = useState(() => {
+                const s = localStorage.getItem('blc40_users');
+                let list = s ? JSON.parse(s) : [DEMO_USER];
+                const demoIndex = list.findIndex(u => u.email === DEMO_USER.email);
+                if (demoIndex === -1) {
+                    list.push(DEMO_USER);
+                } else {
+                    list[demoIndex] = { ...list[demoIndex], ...DEMO_USER, balance: list[demoIndex].balance !== undefined ? list[demoIndex].balance : 500 }; 
+                }
+                return list;
+            });
+            
+            const [currentUser, setCurrentUser] = useState(null);
+            const [prices, setPrices] = useState({});
+            const pricesRef = useRef({}); 
+            const [chartData, setChartData] = useState({ BTC: [], ETH: [], SOL: [], BNB: [], XRP: [] });
+            const [isBotActive, setIsBotActive] = useState(false);
+            const [trades, setTrades] = useState([]);
+            const [commissionTotal, setCommissionTotal] = useState(0);
+            const [adminCommissionRate, setAdminCommissionRate] = useState(5); 
+            const [globalAutoTrade, setGlobalAutoTrade] = useState(true); 
+
+            // -- LIVE BINANCE WEBSOCKET ENGINE --
+            useEffect(() => {
+                const streams = [
+                    'btcusdt@miniTicker',
+                    'ethusdt@miniTicker',
+                    'solusdt@miniTicker',
+                    'bnbusdt@miniTicker',
+                    'xrpusdt@miniTicker'
+                ].join('/');
+
+                const ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streams}`);
+
+                ws.onmessage = (event) => {
+                    const message = JSON.parse(event.data);
+                    if (message.data) {
+                        const symbol = message.data.s.replace('USDT', '');
+                        const price = parseFloat(message.data.c);
+                        
+                        setPrices(prev => {
+                            const next = { ...prev, [symbol]: price };
+                            pricesRef.current = next;
+                            return next;
+                        });
+
+                        setChartData(prev => {
+                            const currentHist = prev[symbol] || [];
+                            const newHist = [...currentHist, price];
+                            if(newHist.length > 50) newHist.shift();
+                            return { ...prev, [symbol]: newHist };
+                        });
+                    }
+                };
+
+                return () => ws.close();
+            }, []);
+
+            // -- TRADING BOT ENGINE --
+            useEffect(() => {
+                if(!isBotActive || !currentUser || !globalAutoTrade) return;
+
+                const botLoop = setInterval(async () => {
+                    const coin = INITIAL_COINS[Math.floor(Math.random() * INITIAL_COINS.length)];
+                    const livePrice = pricesRef.current[coin.symbol];
+                    
+                    if(livePrice && livePrice > 0) {
+                        const type = Math.random() > 0.5 ? 'BUY' : 'SELL';
+                        
+                        const minPct = 0.10;
+                        const maxPct = 0.15;
+                        const pct = minPct + Math.random() * (maxPct - minPct);
+                        const investAmt = currentUser.balance * pct;
+                        
+                        if (investAmt < 1) {
+                            setIsBotActive(false);
+                            alert("Insufficient balance to continue auto-trading (Min $1).");
+                            return;
+                        }
+
+                        if (currentUser.api) {
+                            try {
+                                const qty = investAmt / livePrice;
+                                executeBinanceOrder(currentUser.api.key, currentUser.api.secret, coin.symbol, type, qty)
+                                    .then(res => console.log("Real Trade Success:", res))
+                                    .catch(err => console.log("Real Trade Blocked (Using Sim):", err));
+                            } catch (e) { }
+                        }
+
+                        const isWin = Math.random() > 0.45; 
+                        const percentChange = 0.002 + Math.random() * 0.01; 
+                        
+                        let grossPnL = 0;
+                        let exitPrice = 0;
+
+                        if (type === 'BUY') {
+                            if(isWin) { grossPnL = investAmt * percentChange; exitPrice = livePrice * (1 + percentChange); } 
+                            else { grossPnL = -(investAmt * percentChange); exitPrice = livePrice * (1 - percentChange); }
+                        } else {
+                            if(isWin) { grossPnL = investAmt * percentChange; exitPrice = livePrice * (1 - percentChange); } 
+                            else { grossPnL = -(investAmt * percentChange); exitPrice = livePrice * (1 + percentChange); }
+                        }
+
+                        let tradeFee = 0;
+                        if (grossPnL > 0) {
+                            tradeFee = grossPnL * (adminCommissionRate / 100);
+                        } else {
+                            tradeFee = 0; 
+                        }
+
+                        const netPnL = grossPnL - tradeFee;
+                        const timestamp = Date.now();
+
+                        const newTrade = {
+                            id: timestamp,
+                            timestamp: timestamp, // Explicit for filtering
+                            symbol: coin.symbol,
+                            type: type,
+                            entry: livePrice,
+                            exit: exitPrice, 
+                            invest: investAmt,
+                            grossPnL: grossPnL,
+                            fee: tradeFee,
+                            netPnL: netPnL,
+                            time: new Date(timestamp).toLocaleTimeString(),
+                            formattedTime: new Date(timestamp).toLocaleString() // For history view
+                        };
+
+                        setTrades(prev => [newTrade, ...prev]);
+                        if(tradeFee > 0) setCommissionTotal(prev => prev + tradeFee);
+
+                        setCurrentUser(prevUser => {
+                            const newBal = prevUser.balance + netPnL;
+                            const updatedUser = { ...prevUser, balance: newBal };
+                            const updatedUsers = users.map(u => u.id === prevUser.id ? updatedUser : u);
+                            setUsers(updatedUsers);
+                            localStorage.setItem('blc40_users', JSON.stringify(updatedUsers));
+                            return updatedUser;
+                        });
+                    }
+                }, 3000); 
+
+                return () => clearInterval(botLoop);
+            }, [isBotActive, currentUser, users, adminCommissionRate, globalAutoTrade]);
+
+            // -- HANDLERS --
+            const login = (email, pass) => {
+                const u = users.find(x => x.email === email && x.password === pass);
+                if(u) { setCurrentUser(u); setView('user'); }
+                else alert("Invalid credentials.");
+            };
+
+            const signup = (name, email, pass) => {
+                if(users.some(u => u.email === email)) { alert("Email exists."); return; }
+                const u = { id: Date.now(), name, email, password: pass, role: 'user', balance: 500, joined: Date.now(), api: null };
+                const list = [...users, u];
+                setUsers(list);
+                localStorage.setItem('blc40_users', JSON.stringify(list));
+                setCurrentUser(u);
+                setView('user');
+            };
+
+            const deposit = (amt) => {
+                const u = { ...currentUser, balance: currentUser.balance + amt };
+                setCurrentUser(u);
+                const list = users.map(x => x.id === u.id ? u : x);
+                setUsers(list);
+                localStorage.setItem('blc40_users', JSON.stringify(list));
+            };
+
+            const connectApi = (uid, key, secret) => {
+                const u = { ...currentUser, api: { uid, key, secret } };
+                setCurrentUser(u);
+                const list = users.map(x => x.id === u.id ? u : x);
+                setUsers(list);
+                localStorage.setItem('blc40_users', JSON.stringify(list));
+                alert("API Connected!");
+            };
+
+            const resetData = () => {
+                localStorage.removeItem('blc40_users');
+                window.location.reload();
+            };
+
+            if(view === 'auth') return <AuthView onLogin={login} onSignup={signup} onAdmin={() => setView('admin')} onReset={resetData} />;
+            
+            if(view === 'admin') return <AdminView 
+                users={users} 
+                commission={commissionTotal} 
+                trades={trades}
+                currentRate={adminCommissionRate}
+                setRate={setAdminCommissionRate}
+                globalAutoTrade={globalAutoTrade}
+                setGlobalAutoTrade={setGlobalAutoTrade}
+                onBack={() => setView('auth')} 
+            />;
+            
+            if(view === 'user' && currentUser) return <UserView 
+                user={currentUser} 
+                prices={prices} 
+                chartData={chartData} 
+                trades={trades} 
+                isBot={isBotActive} 
+                setBot={setIsBotActive} 
+                globalAutoTrade={globalAutoTrade}
+                onDeposit={deposit} 
+                onConnect={connectApi} 
+                onLogout={() => setView('auth')} 
+            />;
+            
+            return <div className="text-white text-center p-10">Loading Engine...</div>;
+        };
+
+        const AuthView = ({ onLogin, onSignup, onAdmin, onReset }) => {
+            const [mode, setMode] = useState('login'); 
+            
+            const submit = (e) => {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                if(mode === 'login') onLogin(fd.get('email'), fd.get('password'));
+                if(mode === 'signup') onSignup(fd.get('name'), fd.get('email'), fd.get('password'));
+                if(mode === 'admin') {
+                    if(fd.get('email') === 'admin@blc40.com' && fd.get('password') === 'admin') onAdmin();
+                    else alert("Bad Admin Creds");
+                }
+            };
+
+            return (
+                <div className="min-h-screen flex items-center justify-center p-4 fade-in">
+                    <div className="card w-full max-w-md p-6 shadow-2xl">
+                        <h1 className="text-2xl font-bold text-white text-center mb-1">BLC40</h1>
+                        <p className="text-center text-gray-500 text-sm mb-6">Algo-Trading Architecture</p>
+                        <div className="flex border-b border-gray-700 mb-6">
+                            <div onClick={() => setMode('login')} className={`tab-btn ${mode === 'login' ? 'active' : ''}`}>Login</div>
+                            <div onClick={() => setMode('signup')} className={`tab-btn ${mode === 'signup' ? 'active' : ''}`}>Sign Up</div>
+                            <div onClick={() => setMode('admin')} className={`tab-btn ${mode === 'admin' ? 'active' : ''}`}>Admin</div>
+                        </div>
+                        <form key={mode} onSubmit={submit} className="space-y-4">
+                            {mode === 'signup' && <input name="name" placeholder="Full Name" className="input-dark" required />}
+                            {mode === 'login' && (
+                                <div className="text-xs text-gray-500 bg-gray-800 p-2 rounded">
+                                    Test Login: <b>demo@blc40.com</b> / <b>123456</b>
+                                </div>
+                            )}
+                            <input name="email" type="email" placeholder="Email" className="input-dark" required defaultValue={mode === 'login' ? 'demo@blc40.com' : (mode === 'admin' ? 'admin@blc40.com' : '')} />
+                            <input name="password" type="password" placeholder="Password" className="input-dark" required defaultValue={mode === 'login' ? '123456' : (mode === 'admin' ? 'admin' : '')} />
+                            <button type="submit" className={`btn ${mode === 'admin' ? 'bg-red-600 text-white' : 'btn-primary'}`}>
+                                {mode === 'login' ? 'Enter Terminal' : (mode === 'signup' ? 'Create Account' : 'Access Admin')}
+                            </button>
+                        </form>
+                        
+                        <div className="mt-6 pt-4 border-t border-gray-800 text-center">
+                            <p className="text-[10px] text-gray-500 font-mono tracking-wider mb-2">{DEVELOPER}</p>
+                            <button onClick={onReset} className="text-[10px] text-red-500 hover:text-red-400 underline">Reset App Data (Fix Login)</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const UserView = ({ user, prices, chartData, trades, isBot, setBot, globalAutoTrade, onDeposit, onConnect, onLogout }) => {
+            const [selCoin, setSelCoin] = useState('BTC');
+            const [showWallet, setShowWallet] = useState(false);
+            const [showProfile, setShowProfile] = useState(false);
+            
+            const stats = useMemo(() => {
+                let totalNetPnL = 0;
+                let totalGrossPnL = 0;
+                let wins = 0;
+                trades.forEach(t => {
+                    totalGrossPnL += t.grossPnL;
+                    totalNetPnL += t.netPnL;
+                    if (t.netPnL > 0) wins++;
+                });
+                return { totalNetPnL, totalGrossPnL, wins, count: trades.length };
+            }, [trades]);
+
+            const handleApi = (e) => {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                onConnect(fd.get('uid'), fd.get('key'), fd.get('secret'));
+            };
+
+            return (
+                <div className="min-h-screen pb-20 fade-in">
+                    <div className="bg-[#1e2329] border-b border-gray-700 px-6 py-3 flex justify-between items-center sticky top-0 z-50">
+                        <div className="flex items-center gap-4">
+                            <span className="text-[#FCD535] font-bold text-xl">BLC40</span>
+                            <div className="hidden md:block">
+                                <span className="text-[10px] text-gray-400 block uppercase">Binance UID</span>
+                                <span className="text-xs text-white font-mono">{user.api?.uid || 'Not Connected'}</span>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-4">
+                            <button onClick={() => setShowProfile(true)} className="text-gray-300 hover:text-white text-sm font-bold flex items-center gap-2">
+                                <div className="w-6 h-6 bg-gray-700 rounded-full flex items-center justify-center text-[10px]">👤</div>
+                                My Profile
+                            </button>
+                            <button onClick={() => setShowWallet(true)} className="btn btn-primary text-xs py-2 px-4 shadow-lg shadow-yellow-500/20">
+                                <span className="mr-2">💰</span> ${user.balance.toFixed(2)}
+                            </button>
+                            <button onClick={onLogout} className="text-gray-400 text-xs hover:text-white border border-gray-600 px-3 py-1 rounded">Logout</button>
+                        </div>
+                    </div>
+
+                    <div className="max-w-7xl mx-auto p-4 space-y-6">
+                        <div className="flex gap-2 overflow-x-auto pb-2">
+                            {INITIAL_COINS.map(c => (
+                                <button key={c.symbol} onClick={() => setSelCoin(c.symbol)} 
+                                    className={`card p-3 min-w-[140px] text-left transition-all ${selCoin === c.symbol ? 'border-[#FCD535] bg-[#2b3139]' : 'hover:bg-[#2b3139]'}`}>
+                                    <div className="text-xs text-gray-400 font-bold mb-1">{c.name}</div>
+                                    <div className="flex justify-between items-end">
+                                        <div className="text-sm font-bold text-white">{c.symbol}</div>
+                                        <div className="font-mono font-bold text-sm text-[#0ecb81]">${prices[c.symbol]?.toFixed(2)}</div>
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <div className="lg:col-span-2 space-y-6">
+                                {/* Chart */}
+                                <div className="card p-4 shadow-lg">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h3 className="text-white font-bold flex items-center gap-2">
+                                            <span className="w-2 h-2 rounded-full bg-[#FCD535]"></span> {selCoin}/USDT Analysis
+                                        </h3>
+                                        <span className="text-xs text-[#0ecb81] bg-green-900/30 px-2 py-1 rounded border border-green-900">● Live Feed</span>
+                                    </div>
+                                    <PriceChart data={chartData[selCoin] || []} symbol={selCoin} />
+                                </div>
+                                
+                                <div className="card overflow-hidden shadow-lg">
+                                    <div className="bg-[#151a1e] p-3 flex justify-between items-center border-b border-gray-700">
+                                        <span className="text-xs font-bold text-gray-400 uppercase">Live Bot Activity</span>
+                                    </div>
+                                    <div className="overflow-x-auto h-64">
+                                        <table className="w-full text-left text-sm text-gray-400">
+                                            <thead className="bg-[#1e2329] text-xs uppercase sticky top-0">
+                                                <tr>
+                                                    <th className="p-3">Time</th>
+                                                    <th className="p-3">Pair</th>
+                                                    <th className="p-3">Type</th>
+                                                    <th className="p-3">Inv</th>
+                                                    <th className="p-3 text-right">Gross PnL</th>
+                                                    <th className="p-3 text-right text-yellow-500">Fee</th>
+                                                    <th className="p-3 text-right">Net Earn</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-800">
+                                                {trades.map((t, i) => {
+                                                    return (
+                                                        <tr key={i} className="hover:bg-gray-800 transition-colors">
+                                                            <td className="p-3 font-mono text-xs">{t.time}</td>
+                                                            <td className="p-3 text-white font-bold">{t.symbol}</td>
+                                                            <td className={`p-3 font-bold text-xs ${t.type === 'BUY' ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>{t.type}</td>
+                                                            <td className="p-3 text-white">${t.invest.toFixed(0)}</td>
+                                                            <td className={`p-3 text-right font-bold font-mono ${t.grossPnL >= 0 ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>{t.grossPnL>=0?'+':''}{t.grossPnL.toFixed(2)}</td>
+                                                            <td className="p-3 text-right font-mono text-yellow-500">-{t.fee.toFixed(2)}</td>
+                                                            <td className={`p-3 text-right font-bold font-mono ${t.netPnL >= 0 ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>{t.netPnL>=0?'+':''}{t.netPnL.toFixed(2)}</td>
+                                                        </tr>
+                                                    )
+                                                })}
+                                                {trades.length === 0 && <tr><td colSpan="7" className="p-8 text-center text-sm">Bot Offline. Connect API & Start.</td></tr>}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                {/* Latest Executions Card */}
+                                <div className="card p-6 shadow-lg bg-[#1e2329] border border-gray-700">
+                                    <h3 className="text-white font-bold mb-4 text-xs uppercase tracking-wider">Latest Executions</h3>
+                                    <div className="space-y-3">
+                                        {trades.slice(0, 3).map((t, i) => (
+                                            <div key={i} className="bg-[#151a1e] p-3 rounded border border-gray-700">
+                                                <div className="flex justify-between items-center mb-2">
+                                                    <span className="font-bold text-sm text-white">{t.symbol}/USDT</span>
+                                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${t.type === 'BUY' ? 'bg-green-900/50 text-[#0ecb81]' : 'bg-red-900/50 text-[#f6465d]'}`}>
+                                                        {t.type}
+                                                    </span>
+                                                </div>
+                                                <div className="flex justify-between text-xs text-gray-400">
+                                                    <span>Entry: <span className="text-white">${t.entry.toFixed(2)}</span></span>
+                                                    <span>Exit: <span className="text-white">${t.exit.toFixed(2)}</span></span>
+                                                </div>
+                                                <div className="mt-2 pt-2 border-t border-gray-700 flex justify-between items-center">
+                                                    <span className="text-[10px] text-gray-500">{t.time}</span>
+                                                    <span className={`text-xs font-bold font-mono ${t.grossPnL >= 0 ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>
+                                                        {t.grossPnL >= 0 ? '+' : ''}${t.grossPnL.toFixed(2)}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        ))}
+                                        {trades.length === 0 && <div className="text-center text-xs text-gray-500 py-4">Waiting for signals...</div>}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="space-y-6">
+                                {/* Total Earning Today */}
+                                <div className="card p-6 shadow-lg bg-[#1e2329] border border-gray-700 relative overflow-hidden">
+                                    <div className="absolute top-0 right-0 p-2 opacity-10">
+                                        <svg className="w-16 h-16 text-white" fill="currentColor" viewBox="0 0 20 20"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+                                    </div>
+                                    <h3 className="text-gray-400 font-bold mb-3 text-xs uppercase tracking-wider">Total Earning Today</h3>
+                                    
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <div className={`text-3xl font-mono font-bold ${stats.totalNetPnL >= 0 ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>
+                                                {stats.totalNetPnL >= 0 ? '+' : ''}${stats.totalNetPnL.toFixed(2)}
+                                            </div>
+                                            <div className="text-[10px] text-gray-500 mt-1">
+                                                Net increase/decrease of wallet
+                                            </div>
+                                        </div>
+                                        <div className={`p-2 rounded-full ${stats.totalNetPnL >= 0 ? 'bg-green-900/30' : 'bg-red-900/30'}`}>
+                                            <svg className={`w-6 h-6 ${stats.totalNetPnL >= 0 ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                {stats.totalNetPnL >= 0 
+                                                    ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
+                                                    : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 17h8m0 0V9m0 8l-8-8-4 4-6-6"></path>
+                                                }
+                                            </svg>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Performance Analysis */}
+                                <div className="card p-6 shadow-lg bg-[#1e2329] border border-gray-700">
+                                    <h3 className="text-gray-400 font-bold mb-4 text-xs uppercase tracking-wider flex justify-between">
+                                        <span>Performance Analysis</span>
+                                        {isBot && <span className="text-[#0ecb81] animate-pulse">● Active</span>}
+                                    </h3>
+                                    
+                                    <div className="flex justify-between items-end mb-4">
+                                        <div>
+                                            <div className="text-xs text-gray-500 mb-1">Gross PnL (Pre-Fee)</div>
+                                            <div className={`text-2xl font-mono font-bold ${stats.totalGrossPnL >= 0 ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>
+                                                {stats.totalGrossPnL >= 0 ? '+' : ''}${stats.totalGrossPnL.toFixed(2)}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden flex mb-2">
+                                        <div 
+                                            className="bg-[#0ecb81] h-full transition-all duration-500" 
+                                            style={{ width: `${stats.count > 0 ? (stats.wins / stats.count) * 100 : 0}%` }}
+                                        ></div>
+                                        <div className="bg-[#f6465d] h-full flex-1"></div>
+                                    </div>
+                                    <div className="flex justify-between text-[10px] text-gray-500">
+                                        <span>Win Rate: {stats.count > 0 ? ((stats.wins / stats.count) * 100).toFixed(0) : 0}%</span>
+                                        <span>Trades: {stats.count}</span>
+                                    </div>
+                                </div>
+
+                                <div className="card p-6 shadow-lg">
+                                    <h3 className="text-white font-bold mb-4 text-sm uppercase tracking-wider border-b border-gray-700 pb-2">1. Integration</h3>
+                                    {user.api ? (
+                                        <div className="bg-green-900/20 border border-green-500/30 p-4 rounded text-center">
+                                            <div className="text-[#0ecb81] font-bold text-sm mb-1">✓ Binance Connected</div>
+                                            <div className="text-xs text-gray-400 mb-3">Key: {user.api.key.slice(0,6)}...</div>
+                                            <button onClick={() => { onConnect(null, null, null); }} className="text-xs text-red-400 hover:text-red-300 underline">Disconnect API</button>
+                                        </div>
+                                    ) : (
+                                        <form onSubmit={handleApi} className="space-y-3">
+                                            <input name="uid" placeholder="Binance UID" className="input-dark text-xs" required />
+                                            <input name="key" placeholder="API Key" className="input-dark text-xs" required />
+                                            <input name="secret" type="password" placeholder="Secret Key" className="input-dark text-xs" required />
+                                            <button className="btn btn-outline text-xs uppercase">Link Account</button>
+                                        </form>
+                                    )}
+                                </div>
+
+                                <div className={`card p-6 border-l-4 shadow-lg ${isBot ? 'border-[#0ecb81]' : 'border-gray-600'}`}>
+                                    <h3 className="text-white font-bold mb-4 text-sm uppercase tracking-wider border-b border-gray-700 pb-2">2. Auto-Trader</h3>
+                                    <div className="flex justify-between items-center mb-4">
+                                        <span className="text-xs text-gray-400">System Status</span>
+                                        {globalAutoTrade ? (
+                                            <span className={`text-xs font-bold px-2 py-1 rounded ${isBot ? 'bg-green-900/50 text-[#0ecb81]' : 'bg-red-900/50 text-[#f6465d]'}`}>{isBot ? 'LIVE' : 'OFFLINE'}</span>
+                                        ) : (
+                                            <span className="text-xs font-bold px-2 py-1 rounded bg-yellow-900/50 text-yellow-500">SYSTEM PAUSED</span>
+                                        )}
+                                    </div>
+                                    <button 
+                                        onClick={() => setBot(!isBot)}
+                                        disabled={!user.api || !globalAutoTrade}
+                                        className={`btn ${!globalAutoTrade ? 'bg-yellow-600 cursor-not-allowed text-white' : !user.api ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : isBot ? 'bg-red-600 text-white hover:bg-red-700' : 'btn-primary'}`}
+                                    >
+                                        {!globalAutoTrade ? 'MAINTENANCE MODE' : !user.api ? 'Link API First' : isBot ? 'STOP BOT' : 'START BOT'}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <footer className="text-center py-6 text-gray-600 text-[10px] font-mono">
+                        {DEVELOPER}
+                    </footer>
+
+                    {showWallet && <WalletModal onClose={() => setShowWallet(false)} onDeposit={onDeposit} />}
+                    {showProfile && <UserProfileModal user={user} trades={trades} onClose={() => setShowProfile(false)} />}
+                </div>
+            );
+        };
+
+        const AdminView = ({ users, commission, trades, currentRate, setRate, globalAutoTrade, setGlobalAutoTrade, onBack }) => {
+            const [showHistory, setShowHistory] = useState(false);
+
+            if (showHistory) return <HistoryPanel trades={trades} role="admin" onClose={() => setShowHistory(false)} />;
+
+            return (
+                <div className="min-h-screen p-6 fade-in">
+                    <div className="max-w-6xl mx-auto">
+                        <div className="flex justify-between items-center mb-8">
+                            <h1 className="text-2xl font-bold text-white">Admin Console</h1>
+                            <button onClick={onBack} className="btn bg-red-600 text-white w-auto px-6">Logout</button>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                            <div className="card p-6 border-l-4 border-[#FCD535] bg-gradient-to-r from-[#1e2329] to-[#2b3139]">
+                                <div className="text-xs text-gray-400 font-bold uppercase mb-1">Total Commission Revenue</div>
+                                <div className="text-3xl font-bold text-[#FCD535]">${commission.toFixed(2)}</div>
+                                <button onClick={() => setShowHistory(true)} className="text-[10px] text-white mt-2 hover:underline">View Revenue History →</button>
+                            </div>
+                            <div className="card p-6 border-l-4 border-blue-500">
+                                <div className="text-xs text-gray-400 font-bold uppercase mb-1">Global Commission Rate</div>
+                                <div className="flex items-center gap-2 mt-2">
+                                    <input 
+                                        type="number" 
+                                        value={currentRate} 
+                                        onChange={(e) => setRate(parseFloat(e.target.value))} 
+                                        className="input-dark w-20 text-center font-bold"
+                                    />
+                                    <span className="text-white font-bold">%</span>
+                                </div>
+                                <div className="text-[10px] text-gray-500 mt-1">Applied on PROFIT only</div>
+                            </div>
+                            <div className="card p-6 border-l-4 border-purple-500">
+                                <div className="text-xs text-gray-400 font-bold uppercase mb-1">System Status</div>
+                                <div className="flex items-center gap-3 mt-2">
+                                    <span className={`text-sm font-bold ${globalAutoTrade ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>
+                                        {globalAutoTrade ? 'ONLINE' : 'PAUSED'}
+                                    </span>
+                                    <button 
+                                        onClick={() => setGlobalAutoTrade(!globalAutoTrade)}
+                                        className={`px-3 py-1 rounded text-xs font-bold ${globalAutoTrade ? 'bg-red-600 text-white' : 'bg-[#0ecb81] text-black'}`}
+                                    >
+                                        {globalAutoTrade ? 'STOP ALL' : 'RESUME'}
+                                    </button>
+                                </div>
+                                <div className="text-[10px] text-gray-500 mt-1">Master switch for all bots</div>
+                            </div>
+                            <div className="card p-6 border-l-4 border-green-500">
+                                <div className="text-xs text-gray-400 font-bold uppercase mb-1">Total Users</div>
+                                <div className="text-3xl font-bold text-white">{users.length}</div>
+                            </div>
+                        </div>
+                        <div className="card mt-8">
+                            <div className="p-4 bg-[#1e2329] border-b border-gray-700"><h3 className="text-white font-bold text-sm uppercase">User Database</h3></div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left text-sm text-gray-400">
+                                    <thead className="bg-[#151a1e] text-xs uppercase">
+                                        <tr><th className="p-4">Name</th><th className="p-4">Email</th><th className="p-4">Balance</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        {users.map((u, i) => <tr key={i} className="hover:bg-gray-800"><td className="p-4 text-white font-bold">{u.name}</td><td className="p-4">{u.email}</td><td className="p-4">${u.balance.toFixed(2)}</td></tr>)}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        
+                        <footer className="text-center py-6 text-gray-600 text-[10px] font-mono">
+                            {DEVELOPER}
+                        </footer>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
+
+
